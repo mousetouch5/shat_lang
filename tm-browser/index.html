@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TM Webcam Classifier</title>
+    <style>
+      body {
+        font-family: system-ui, Arial;
+        margin: 16px;
+      }
+      .wrap {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+      video,
+      canvas {
+        width: 360px;
+        border: 1px solid #ccc;
+        border-radius: 10px;
+      }
+      .card {
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        padding: 12px;
+        min-width: 340px;
+      }
+      button {
+        padding: 10px 14px;
+        margin-right: 8px;
+      }
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Teachable Machine (Browser Webcam)</h2>
+
+    <div class="wrap">
+      <div class="card">
+        <video id="video" autoplay playsinline muted></video>
+        <div style="margin-top: 10px">
+          <button id="start">Start</button>
+          <button id="stop" disabled>Stop</button>
+        </div>
+        <div style="margin-top: 10px">Status: <b id="status">Idle</b></div>
+      </div>
+
+      <div class="card">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          "
+        >
+          <h3 style="margin: 0">Prediction</h3>
+          <label>
+            FPS:
+            <select id="fps">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="15">15</option>
+            </select>
+          </label>
+        </div>
+        <pre id="out">-</pre>
+      </div>
+    </div>
+
+    <!-- TFJS + Teachable Machine image helper -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
+
+    <script>
+      const MODEL_URL = "./model/model.json";
+      const METADATA_URL = "./model/metadata.json"; // ok if missing
+
+      const video = document.getElementById("video");
+      const startBtn = document.getElementById("start");
+      const stopBtn = document.getElementById("stop");
+      const statusEl = document.getElementById("status");
+      const outEl = document.getElementById("out");
+      const fpsSel = document.getElementById("fps");
+
+      let model = null;
+      let stream = null;
+      let timer = null;
+
+      function setStatus(s) {
+        statusEl.textContent = s;
+      }
+
+      function formatPred(preds) {
+        preds.sort((a, b) => b.probability - a.probability);
+        const top = preds[0];
+        const lines = preds.map(
+          (p) =>
+            `${String(p.className).padEnd(10)} ${(p.probability * 100).toFixed(
+              1
+            )}%`
+        );
+        return (
+          `TOP: ${top.className} ${(top.probability * 100).toFixed(1)}%\n\n` +
+          lines.join("\n")
+        );
+      }
+
+      async function start() {
+        startBtn.disabled = true;
+        setStatus("Requesting camera...");
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user" },
+            audio: false,
+          });
+          video.srcObject = stream;
+          await new Promise((res) => (video.onloadedmetadata = res));
+          await video.play();
+
+          setStatus("Loading model...");
+          try {
+            model = await tmImage.load(MODEL_URL, METADATA_URL);
+          } catch (e) {
+            console.warn("metadata.json not found, loading model only:", e);
+            model = await tmImage.load(MODEL_URL);
+          }
+
+          setStatus("Running");
+          stopBtn.disabled = false;
+
+          const runEveryMs = () => Math.floor(1000 / Number(fpsSel.value));
+
+          timer = setInterval(async () => {
+            if (!model) return;
+            const preds = await model.predict(video);
+            outEl.textContent = formatPred(preds);
+            // Also log top prediction
+            const top = preds
+              .slice()
+              .sort((a, b) => b.probability - a.probability)[0];
+            console.log(top.className, top.probability);
+          }, runEveryMs());
+
+          // if FPS changes, restart interval
+          fpsSel.onchange = () => {
+            if (timer) clearInterval(timer);
+            timer = setInterval(async () => {
+              if (!model) return;
+              const preds = await model.predict(video);
+              outEl.textContent = formatPred(preds);
+            }, runEveryMs());
+          };
+        } catch (err) {
+          console.error(err);
+          setStatus("Error: " + (err?.message ?? err));
+          startBtn.disabled = false;
+        }
+      }
+
+      function stop() {
+        if (timer) clearInterval(timer);
+        timer = null;
+
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+        }
+        video.srcObject = null;
+
+        model = null;
+        outEl.textContent = "-";
+        setStatus("Stopped");
+
+        stopBtn.disabled = true;
+        startBtn.disabled = false;
+      }
+
+      startBtn.onclick = start;
+      stopBtn.onclick = stop;
+    </script>
+  </body>
+</html>
